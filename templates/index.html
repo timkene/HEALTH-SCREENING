@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Clearline HMO - Medical Report Portal{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="logo">
+        <img src="/static/Clearline.png" alt="Clearline HMO Logo" onerror="this.style.display='none'">
+        <h1>Clearline HMO</h1>
+        <p>Medical Report Portal</p>
+    </div>
+    
+    <div class="header">
+        <h2>Access Your Health Report Securely</h2>
+        <p>Your personalized health screening report is ready for download</p>
+    </div>
+    
+    <div class="security-note">
+        <h3>🔒 Secure Multi-Factor Verification</h3>
+        <p>Your medical reports are protected with advanced security. To access your report, you'll need to verify your identity using:</p>
+        <ul>
+            <li><strong>Enrollee ID:</strong> Your unique patient identifier</li>
+            <li><strong>Email Address:</strong> The email address on file</li>
+            <li><strong>Phone Number:</strong> Your registered phone number</li>
+        </ul>
+    </div>
+    
+    <div class="contact-info">
+        <h4>📞 Need Help?</h4>
+        <p><strong>WhatsApp Telemedicine:</strong> 08076490056 (Chat with a medical doctor)</p>
+        <p><strong>Email Support:</strong> hello@clearlinehmo.com</p>
+    </div>
+    
+    <div style="text-align: center; margin-top: 30px;">
+        <a href="{{ url_for('verify') }}" class="btn" style="font-size: 18px; padding: 18px 40px;">
+            🔐 Access My Report
+        </a>
+    </div>
+    
+    <div style="text-align: center; margin-top: 30px; color: #666;">
+        <p><small>This portal provides secure access to your confidential health screening results.</small></p>
+        <p><small>All access attempts are logged for security purposes.</small></p>
+    </div>
+</div>
+{% endblock %}

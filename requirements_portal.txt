@@ -1,0 +1,21 @@
+# Medical Report Portal Requirements
+# Install with: pip install -r requirements_portal.txt
+
+# Web Framework
+Flask==2.3.3
+Werkzeug==2.3.7
+
+# Data Processing
+pandas==2.0.3
+openpyxl==3.1.2
+
+# Security
+cryptography==41.0.4
+
+# Production Server
+gunicorn==21.2.0
+
+# Optional: For advanced features
+# redis==4.6.0  # For session storage
+# psycopg2-binary==2.9.7  # For PostgreSQL database
+# celery==5.3.1  # For background tasks

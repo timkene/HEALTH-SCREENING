@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Clearline HMO Portal{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="header">
+        <h2>Welcome, {{ customer_name }}! 👋</h2>
+        <p><strong>Enrollee ID:</strong> {{ customer_id }}</p>
+    </div>
+    
+    {% if report_exists %}
+        <div style="text-align: center; margin: 30px 0;">
+            <h3>📋 Your Health Screening Report</h3>
+            <p>Your comprehensive health screening report is ready for viewing and download.</p>
+            
+            <div style="margin: 30px 0;">
+                <a href="{{ url_for('view_report') }}" class="btn btn-view" target="_blank" style="margin: 10px;">
+                    👁️ View Report Online
+                </a>
+                <a href="{{ url_for('download_report') }}" class="btn btn-download" style="margin: 10px;">
+                    📥 Download PDF Report
+                </a>
+            </div>
+        </div>
+        
+        <div class="security-note">
+            <h4>📝 Important Information About Your Report:</h4>
+            <ul>
+                <li><strong>Confidential:</strong> Your report contains sensitive medical information</li>
+                <li><strong>Secure Access:</strong> Only you can access this report with your credentials</li>
+                <li><strong>Medical Consultation:</strong> If you have questions, contact our medical team</li>
+                <li><strong>Session Security:</strong> This portal session will expire for security</li>
+                <li><strong>Report Contents:</strong> Detailed analysis of your health metrics and personalized recommendations</li>
+            </ul>
+        </div>
+        
+        <div class="contact-info">
+            <h4>🩺 Need Medical Consultation?</h4>
+            <p><strong>WhatsApp Telemedicine:</strong> 08076490056 (Chat with a medical doctor)</p>
+            <p><strong>Email Support:</strong> hello@clearlinehmo.com</p>
+            <p><small>Our medical team is available to help you understand your results and provide guidance.</small></p>
+        </div>
+    {% else %}
+        <div style="text-align: center; margin: 30px 0; color: #dc3545;">
+            <h3>❌ Report Not Available</h3>
+            <p>Your health screening report is not currently available in the system.</p>
+            <p>This may be due to:</p>
+            <ul style="text-align: left; margin: 20px 0; color: #666;">
+                <li>Report is still being processed</li>
+                <li>Technical issue with file storage</li>
+                <li>Report generation in progress</li>
+            </ul>
+            <p><strong>Please contact our support team for assistance.</strong></p>
+        </div>
+        
+        <div class="contact-info">
+            <h4>📞 Contact Support</h4>
+            <p><strong>WhatsApp:</strong> 08076490056</p>
+            <p><strong>Email:</strong> hello@clearlinehmo.com</p>
+        </div>
+    {% endif %}
+    
+    <div style="text-align: center; margin-top: 30px;">
+        <a href="{{ url_for('logout') }}" class="btn btn-logout">🚪 Logout</a>
+    </div>
+</div>
+{% endblock %}

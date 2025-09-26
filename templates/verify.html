@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}Verify Identity - Clearline HMO Portal{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="header">
+        <h2>🔐 Identity Verification</h2>
+        <p>Please enter your details to access your health screening report</p>
+    </div>
+    
+    <form method="POST">
+        <div class="form-group">
+            <label for="customer_id">Enrollee ID:</label>
+            <input type="text" id="customer_id" name="customer_id" required 
+                   placeholder="Enter your enrollee ID (e.g., CL/ARIK/022/2017)"
+                   autocomplete="username">
+        </div>
+        
+        <div class="form-group">
+            <label for="email">Email Address:</label>
+            <input type="email" id="email" name="email" required 
+                   placeholder="Enter your email address"
+                   autocomplete="email">
+        </div>
+        
+        <div class="form-group">
+            <label for="phone">Phone Number:</label>
+            <input type="tel" id="phone" name="phone" required 
+                   placeholder="Enter your phone number (skip the first 0)"
+                   autocomplete="tel">
+            <small style="color: #666; font-size: 12px; margin-top: 5px; display: block;">
+                📱 Note: Skip the first "0" when entering your phone number (e.g., enter 8123456789 instead of 08123456789)
+            </small>
+        </div>
+        
+        <div style="text-align: center; margin-top: 30px;">
+            <button type="submit" class="btn" style="font-size: 16px; padding: 15px 40px;">
+                🔍 Verify & Continue
+            </button>
+        </div>
+    </form>
+    
+    <div class="security-note">
+        <h3>🛡️ Security Information</h3>
+        <ul>
+            <li>Your information is encrypted and secure</li>
+            <li>All access attempts are logged for security</li>
+            <li>Your session will expire after 30 minutes for security</li>
+            <li>If you don't have your details, contact our support team</li>
+        </ul>
+    </div>
+    
+    <div style="text-align: center; margin-top: 20px;">
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">← Back to Home</a>
+    </div>
+</div>
+{% endblock %}

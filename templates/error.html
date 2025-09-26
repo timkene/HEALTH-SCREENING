@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Error - Clearline HMO Portal{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="header">
+        <h2>⚠️ Error</h2>
+        <p>{{ error_message }}</p>
+    </div>
+    
+    <div class="security-note">
+        <h3>🔧 What to do next:</h3>
+        <ul>
+            <li>Try refreshing the page</li>
+            <li>Check your internet connection</li>
+            <li>If the problem persists, contact our support team</li>
+            <li>Make sure you're using the correct web address</li>
+        </ul>
+    </div>
+    
+    <div class="contact-info">
+        <h4>📞 Need Help?</h4>
+        <p><strong>WhatsApp Support:</strong> 08076490056</p>
+        <p><strong>Email Support:</strong> hello@clearlinehmo.com</p>
+    </div>
+    
+    <div style="text-align: center; margin-top: 30px;">
+        <a href="{{ url_for('index') }}" class="btn">🏠 Back to Home</a>
+        <a href="{{ url_for('verify') }}" class="btn btn-secondary">🔐 Try Again</a>
+    </div>
+</div>
+{% endblock %}
