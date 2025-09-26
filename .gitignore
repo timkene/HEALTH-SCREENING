@@ -59,6 +59,38 @@ tmp/
 # reports/
 # .env
 
+# Keep only essential files for deployment
+# Remove everything except:
+# - medical_portal.py
+# - medical_portal_production.py  
+# - requirements.txt
+# - requirements_portal.txt
+# - templates/
+# - static/
+# - Procfile
+# - runtime.txt
+# - .gitignore
+# - README.md (if needed)
+
+# Remove all other files
+*.xlsx
+*.xls
+*.png
+*.webp
+*.pdf
+HEALTH_SCREEN.py
+individual_report_generator.py
+report_generator.py
+streamlit_health_app.py
+test_*.py
+remove_emojis.py
+zoho_*.py
+*_GUIDE.md
+README_*.md
+upload_data.py
+generate_customer_csv.py
+run_app.py
+
 # But include empty folders
 !reports/.gitkeep
 !templates/.gitkeep
