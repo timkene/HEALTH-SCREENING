@@ -3,7 +3,7 @@
 
 # Web Framework
 Flask==3.0.3
-Werkzeug==2.3.7
+Werkzeug==3.0.4
 
 # Data Processing
 pandas==2.2.2
