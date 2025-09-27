@@ -24,8 +24,18 @@ class MotherDuckDB:
         if not self.token:
             raise ValueError("MotherDuck token is required. Set MOTHERDUCK_TOKEN environment variable.")
         
-        # Connect to MotherDuck
-        self.conn = duckdb.connect(f"md:health_screening?motherduck_token={self.token}")
+        # Connect to MotherDuck (create database if it doesn't exist)
+        try:
+            self.conn = duckdb.connect(f"md:health_screening?motherduck_token={self.token}")
+        except Exception as e:
+            # If database doesn't exist, create it first
+            print(f"Creating database 'health_screening' in MotherDuck...")
+            self.conn = duckdb.connect(f"md:?motherduck_token={self.token}")
+            self.conn.execute("CREATE DATABASE health_screening")
+            self.conn.close()
+            # Now connect to the created database
+            self.conn = duckdb.connect(f"md:health_screening?motherduck_token={self.token}")
+        
         self._create_tables()
     
     def _create_tables(self):
