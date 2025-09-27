@@ -4,7 +4,7 @@ Medical Report Portal - Secure access to individual health reports
 Integrates with the health screening system
 """
 
-from flask import Flask, render_template, request, send_file, redirect, url_for, flash, session
+from flask import Flask, render_template, request, send_file, redirect, url_for, flash, session, Response
 import pandas as pd
 import os
 import hashlib
@@ -13,6 +13,8 @@ import secrets
 from datetime import datetime, timedelta
 import logging
 import json
+from database_config import get_db, close_db
+from pdf_storage import get_pdf_storage
 
 app = Flask(__name__, static_folder='static')
 app.secret_key = secrets.token_hex(16)  # Generate a secure secret key
@@ -35,67 +37,45 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.permanent_session_lifetime = timedelta(minutes=30)
 
 class CustomerDatabase:
-    def __init__(self, csv_file):
-        self.csv_file = csv_file
-        self.customers = self.load_customers()
-    
-    def load_customers(self):
-        """Load customer data from CSV"""
-        try:
-            if not os.path.exists(self.csv_file):
-                logger.error(f"Customer data file not found: {self.csv_file}")
-                return {}
-                
-            df = pd.read_csv(self.csv_file)
-            # Expected columns: ID, Name, Email, Phone, ReportFileName
-            customers = {}
-            for _, row in df.iterrows():
-                customers[str(row['ID'])] = {
-                    'name': str(row['Name']).strip(),
-                    'email': str(row['Email']).strip().lower(),
-                    'phone': str(row['Phone']).strip(),
-                    'report_file': str(row.get('ReportFileName', f"{row['ID']}.pdf")).strip()
-                }
-            logger.info(f"Loaded {len(customers)} customers from {self.csv_file}")
-            return customers
-        except Exception as e:
-            logger.error(f"Error loading customer data: {e}")
-            return {}
+    def __init__(self):
+        self.db = get_db()
+        self.pdf_storage = get_pdf_storage()
     
     def verify_customer(self, customer_id, email, phone):
         """Verify customer credentials with case-insensitive matching"""
-        customer_id = str(customer_id).strip()
-        email = email.strip().lower()
-        phone = str(phone).strip()
-        
-        # Normalize phone number - remove leading 0 if present
-        if phone.startswith('0'):
-            phone_normalized = phone[1:]
-        else:
-            phone_normalized = phone
-        
-        if customer_id in self.customers:
-            customer = self.customers[customer_id]
-            customer_phone = customer['phone']
-            
-            # Normalize stored phone number too
-            if customer_phone.startswith('0'):
-                customer_phone_normalized = customer_phone[1:]
-            else:
-                customer_phone_normalized = customer_phone
-            
-            # Case-insensitive email matching and flexible phone matching
-            if (customer['email'] == email and 
-                (customer_phone == phone or customer_phone_normalized == phone_normalized)):
-                return customer
-        return None
+        try:
+            customer = self.db.verify_customer(customer_id, email, phone)
+            if customer:
+                # Convert to expected format
+                return {
+                    'name': customer['name'],
+                    'email': customer['email'],
+                    'phone': customer['phone'],
+                    'report_file': customer['report_file_name']
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error verifying customer: {e}")
+            return None
     
     def get_customer_by_id(self, customer_id):
         """Get customer data by ID"""
-        return self.customers.get(str(customer_id))
+        try:
+            customer = self.db.get_customer(customer_id)
+            if customer:
+                return {
+                    'name': customer['name'],
+                    'email': customer['email'],
+                    'phone': customer['phone'],
+                    'report_file': customer['report_file_name']
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error getting customer: {e}")
+            return None
 
 # Initialize database
-db = CustomerDatabase(CUSTOMER_DATA_FILE)
+db = CustomerDatabase()
 
 # Security headers
 @app.after_request
@@ -173,16 +153,17 @@ def dashboard():
     customer_id = session.get('customer_id')
     customer_name = session.get('customer_name')
     
-    # Check if report file exists
+    # Check if report exists in MotherDuck
     customer = db.get_customer_by_id(customer_id)
     if not customer:
         log_access("DASHBOARD_ERROR", customer_id, success=False, details="Customer not found")
         flash('Customer data not found.', 'error')
         return redirect(url_for('verify'))
     
+    # Check if PDF exists in MotherDuck
+    pdf_metadata = db.pdf_storage.get_pdf_metadata(customer_id)
+    report_exists = pdf_metadata is not None
     report_file = customer['report_file']
-    report_path = os.path.join(REPORTS_FOLDER, report_file)
-    report_exists = os.path.exists(report_path)
     
     # Log dashboard access
     log_access("DASHBOARD_ACCESS", customer_id, success=True)
@@ -195,7 +176,7 @@ def dashboard():
 
 @app.route('/download_report')
 def download_report():
-    """Download customer's medical report"""
+    """Download customer's medical report from MotherDuck"""
     if not session.get('verified'):
         log_access("DOWNLOAD_DENIED", success=False, details="Not verified")
         flash('Please verify your identity first.', 'warning')
@@ -209,24 +190,27 @@ def download_report():
         flash('Customer data not found.', 'error')
         return redirect(url_for('dashboard'))
     
-    report_file = customer['report_file']
-    report_path = os.path.join(REPORTS_FOLDER, report_file)
-    
-    if not os.path.exists(report_path):
-        log_access("DOWNLOAD_ERROR", customer_id, success=False, details="Report file not found")
-        flash('Report file not found. Please contact support.', 'error')
-        return redirect(url_for('dashboard'))
-    
     try:
-        # Log successful download
-        log_access("REPORT_DOWNLOAD", customer_id, success=True, details=f"File: {report_file}")
+        # Get PDF from MotherDuck
+        pdf_data = db.pdf_storage.get_pdf(customer_id)
         
-        return send_file(
-            report_path,
-            as_attachment=True,
-            download_name=f"Health_Report_{customer_id}.pdf",
-            mimetype='application/pdf'
+        if not pdf_data:
+            log_access("DOWNLOAD_ERROR", customer_id, success=False, details="Report not found in database")
+            flash('Report not found. Please contact support.', 'error')
+            return redirect(url_for('dashboard'))
+        
+        # Log successful download
+        log_access("REPORT_DOWNLOAD", customer_id, success=True, details="Downloaded from MotherDuck")
+        
+        # Return PDF as download
+        return Response(
+            pdf_data,
+            mimetype='application/pdf',
+            headers={
+                'Content-Disposition': f'attachment; filename=Health_Report_{customer_id}.pdf'
+            }
         )
+        
     except Exception as e:
         logger.error(f"Error downloading report for customer {customer_id}: {e}")
         log_access("DOWNLOAD_ERROR", customer_id, success=False, details=f"Error: {str(e)}")
@@ -235,7 +219,7 @@ def download_report():
 
 @app.route('/view_report')
 def view_report():
-    """View report in browser (inline)"""
+    """View report in browser (inline) from MotherDuck"""
     if not session.get('verified'):
         log_access("VIEW_DENIED", success=False, details="Not verified")
         flash('Please verify your identity first.', 'warning')
@@ -249,22 +233,24 @@ def view_report():
         flash('Customer data not found.', 'error')
         return redirect(url_for('dashboard'))
     
-    report_file = customer['report_file']
-    report_path = os.path.join(REPORTS_FOLDER, report_file)
-    
-    if not os.path.exists(report_path):
-        log_access("VIEW_ERROR", customer_id, success=False, details="Report file not found")
-        flash('Report file not found. Please contact support.', 'error')
-        return redirect(url_for('dashboard'))
-    
     try:
-        # Log successful view
-        log_access("REPORT_VIEW", customer_id, success=True, details=f"File: {report_file}")
+        # Get PDF from MotherDuck
+        pdf_data = db.pdf_storage.get_pdf(customer_id)
         
-        return send_file(
-            report_path,
+        if not pdf_data:
+            log_access("VIEW_ERROR", customer_id, success=False, details="Report not found in database")
+            flash('Report not found. Please contact support.', 'error')
+            return redirect(url_for('dashboard'))
+        
+        # Log successful view
+        log_access("REPORT_VIEW", customer_id, success=True, details="Viewed from MotherDuck")
+        
+        # Return PDF for inline viewing
+        return Response(
+            pdf_data,
             mimetype='application/pdf'
         )
+        
     except Exception as e:
         logger.error(f"Error viewing report for customer {customer_id}: {e}")
         log_access("VIEW_ERROR", customer_id, success=False, details=f"Error: {str(e)}")
