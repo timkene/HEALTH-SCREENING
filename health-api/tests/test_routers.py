@@ -17,10 +17,15 @@ def test_protected_endpoint_rejects_wrong_key(client):
 
 
 def test_protected_endpoint_accepts_valid_key(client):
-    response = client.get(
-        "/api/reports/batch/test-batch",
-        headers={"X-API-Key": "test-key"},
-    )
+    from unittest.mock import patch, MagicMock
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value.fetchall.return_value = []
+    mock_conn.description = []
+    with patch("api.routers.reports.get_db", return_value=mock_conn):
+        response = client.get(
+            "/api/reports/batch/test-batch",
+            headers={"X-API-Key": "test-key"},
+        )
     assert response.status_code == 200
 
 
