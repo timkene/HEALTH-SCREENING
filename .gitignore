@@ -57,7 +57,7 @@ tmp/
 # Sensitive data (keep these local)
 # customers.csv
 # reports/
-# .env
+.env
 
 # Keep only essential files for deployment
 # Remove everything except:
