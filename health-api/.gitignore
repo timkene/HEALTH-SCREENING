@@ -1,0 +1,2 @@
+# Un-ignore test files inside health-api (root .gitignore has test_*.py rule)
+!tests/test_*.py
