@@ -58,6 +58,17 @@ tmp/
 # customers.csv
 # reports/
 .env
+backblaze_credentials.env
+*.credentials.env
+
+# Database files
+health-api/health_screening.db
+health-api/health_screening.db.wal
+*.db.wal
+
+# Test artifacts
+health-api/.coverage
+health-api/htmlcov/
 
 # Keep only essential files for deployment
 # Remove everything except:
