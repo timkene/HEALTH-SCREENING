@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     backblaze_endpoint_url: str
 
     tele_alert_email: str
+    cors_origins: str = "*"  # comma-separated list or "*"
     redis_url: str = "redis://localhost:6379/0"
     environment: str = "development"
 
