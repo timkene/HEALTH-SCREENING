@@ -19,7 +19,7 @@ class PDFStorage:
     
     def store_pdf(self, file_path: str, customer_id: str, company_name: str) -> bool:
         """
-        Store PDF file in MotherDuck database
+        Store PDF file in MotherDuck database with fallback to local storage
         
         Args:
             file_path: Path to the PDF file
@@ -38,12 +38,17 @@ class PDFStorage:
             with open(file_path, 'rb') as f:
                 pdf_data = f.read()
             
-            # Encode to base64 for storage
-            pdf_base64 = base64.b64encode(pdf_data).decode('utf-8')
-            
             # Get file info
             file_size = len(pdf_data)
             file_name = os.path.basename(file_path)
+            
+            # Check if file is too large for MotherDuck (4MB limit)
+            if file_size > 4 * 1024 * 1024:  # 4MB
+                logger.warning(f"PDF too large for MotherDuck ({file_size} bytes), storing locally only")
+                return self._store_locally(file_path, customer_id, company_name, file_name, file_size)
+            
+            # Encode to base64 for storage
+            pdf_base64 = base64.b64encode(pdf_data).decode('utf-8')
             
             # Store in database
             self.db.conn.execute("""
@@ -60,16 +65,66 @@ class PDFStorage:
             # Store metadata
             self.db.store_report_metadata(customer_id, file_name, file_size, company_name)
             
-            logger.info(f"Stored PDF for {customer_id}: {file_name} ({file_size} bytes)")
+            logger.info(f"Stored PDF for {customer_id} in MotherDuck: {file_name} ({file_size} bytes)")
             return True
             
         except Exception as e:
-            logger.error(f"Error storing PDF for {customer_id}: {e}")
+            logger.error(f"Error storing PDF for {customer_id} in MotherDuck: {e}")
+            # Fallback to local storage
+            logger.info(f"Falling back to local storage for {customer_id}")
+            return self._store_locally(file_path, customer_id, company_name, os.path.basename(file_path), len(pdf_data))
+    
+    def _store_locally(self, file_path: str, customer_id: str, company_name: str, file_name: str, file_size: int) -> bool:
+        """
+        Store PDF locally as fallback when MotherDuck fails
+        
+        Args:
+            file_path: Path to the PDF file
+            customer_id: Customer ID
+            company_name: Company name
+            file_name: Original file name
+            file_size: File size in bytes
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            import shutil
+            
+            # Create local reports directory if it doesn't exist
+            local_reports_dir = "reports"
+            os.makedirs(local_reports_dir, exist_ok=True)
+            
+            # Copy PDF to local reports directory
+            local_file_path = os.path.join(local_reports_dir, f"{customer_id}.pdf")
+            shutil.copy2(file_path, local_file_path)
+            
+            # Store metadata in database (without PDF data)
+            self.db.conn.execute("""
+                INSERT OR REPLACE INTO pdf_reports (
+                    customer_id, 
+                    file_name, 
+                    file_data, 
+                    file_size, 
+                    company_name,
+                    created_at,
+                    storage_type
+                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'local')
+            """, [customer_id, file_name, "", file_size, company_name])
+            
+            # Store metadata
+            self.db.store_report_metadata(customer_id, file_name, file_size, company_name)
+            
+            logger.info(f"Stored PDF locally for {customer_id}: {file_name} ({file_size} bytes)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error storing PDF locally for {customer_id}: {e}")
             return False
     
     def get_pdf(self, customer_id: str) -> Optional[bytes]:
         """
-        Retrieve PDF file from MotherDuck database
+        Retrieve PDF file from MotherDuck database or local storage
         
         Args:
             customer_id: Customer ID
@@ -79,17 +134,35 @@ class PDFStorage:
         """
         try:
             result = self.db.conn.execute("""
-                SELECT file_data FROM pdf_reports 
+                SELECT file_data, storage_type FROM pdf_reports 
                 WHERE customer_id = ?
                 ORDER BY created_at DESC
                 LIMIT 1
             """, [customer_id]).fetchone()
             
             if result:
-                # Decode from base64
-                pdf_data = base64.b64decode(result[0])
-                logger.info(f"Retrieved PDF for {customer_id}")
-                return pdf_data
+                file_data, storage_type = result
+                
+                if storage_type == 'local':
+                    # Read from local file
+                    local_file_path = os.path.join("reports", f"{customer_id}.pdf")
+                    if os.path.exists(local_file_path):
+                        with open(local_file_path, 'rb') as f:
+                            pdf_data = f.read()
+                        logger.info(f"Retrieved PDF locally for {customer_id}")
+                        return pdf_data
+                    else:
+                        logger.warning(f"Local PDF file not found for {customer_id}")
+                        return None
+                else:
+                    # Decode from base64 (MotherDuck storage)
+                    if file_data:
+                        pdf_data = base64.b64decode(file_data)
+                        logger.info(f"Retrieved PDF from MotherDuck for {customer_id}")
+                        return pdf_data
+                    else:
+                        logger.warning(f"No PDF data in MotherDuck for {customer_id}")
+                        return None
             
             logger.warning(f"No PDF found for customer {customer_id}")
             return None

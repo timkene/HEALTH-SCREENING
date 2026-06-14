@@ -21,6 +21,14 @@ COLUMN_MAP = {
     "PROTEIN": "urine_protein",
     "EMAIL": "email",
     "PHONE": "phone",
+    "TEL NO": "phone",
+    "TELEPHONE": "phone",
+}
+
+_GENDER_MAP = {
+    "FEMALE": "F", "MALE": "M",
+    "female": "F", "male": "M",
+    "f": "F", "m": "M",
 }
 
 
@@ -57,8 +65,20 @@ def _read_file(file_bytes: bytes, filename: str) -> pd.DataFrame:
 
 def _row_to_model(row: pd.Series, company_name: str) -> EnrolleeRow:
     kwargs: dict = {"company_name": company_name}
+    seen_fields: set = set()
     for csv_col, field in COLUMN_MAP.items():
+        if field in seen_fields:
+            continue
         val = row.get(csv_col)
         if pd.notna(val):
+            if field == "age":
+                val = int(float(val))
+            elif field == "gender":
+                val = _GENDER_MAP.get(str(val).strip(), str(val).strip().upper()[0])
+            elif field == "phone":
+                val = str(int(val)) if isinstance(val, float) else str(val)
             kwargs[field] = val
+            seen_fields.add(field)
+    if "age" not in kwargs:
+        kwargs["age"] = 0
     return EnrolleeRow(**kwargs)

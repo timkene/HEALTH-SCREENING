@@ -1,7 +1,12 @@
+import logging
+import os
 import duckdb
 from api.core.config import get_settings
 
+logger = logging.getLogger(__name__)
+
 _connection: duckdb.DuckDBPyConnection | None = None
+_LOCAL_DB = os.path.join(os.path.dirname(__file__), "..", "..", "health_screening.db")
 
 
 def get_db() -> duckdb.DuckDBPyConnection:
@@ -9,11 +14,17 @@ def get_db() -> duckdb.DuckDBPyConnection:
     if _connection is not None:
         return _connection
     settings = get_settings()
-    if not settings.motherduck_token:
-        raise RuntimeError("MOTHERDUCK_TOKEN is required but empty")
-    _connection = duckdb.connect(
-        f"md:health_screening?motherduck_token={settings.motherduck_token}"
-    )
+    if settings.motherduck_token:
+        try:
+            _connection = duckdb.connect(
+                f"md:health_screening?motherduck_token={settings.motherduck_token}"
+            )
+            logger.info("Connected to MotherDuck")
+        except Exception as exc:
+            logger.warning("MotherDuck unavailable (%s) — falling back to local DB", exc)
+            _connection = duckdb.connect(os.path.abspath(_LOCAL_DB))
+    else:
+        _connection = duckdb.connect(os.path.abspath(_LOCAL_DB))
     _ensure_tables(_connection)
     return _connection
 

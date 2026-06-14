@@ -15,6 +15,8 @@ from email.mime.base import MIMEBase
 from email import encoders
 from database_config import get_db, close_db
 from pdf_storage import get_pdf_storage
+from backblaze_native_config import backblaze_native_manager, test_backblaze_native_setup
+from dotenv import load_dotenv
 
 # Zoho Mail Configuration
 CLIENT_ID = "1000.N7OTEZEMAV4AS2X2FEC0P7P2PYJIZC"
@@ -31,6 +33,9 @@ SMTP_PASSWORD = "your_app_password_here"  # You'll need to set this
 # MotherDuck Configuration
 MOTHERDUCK_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6Imxlb2Nhc2V5MEBnbWFpbC5jb20iLCJzZXNzaW9uIjoibGVvY2FzZXkwLmdtYWlsLmNvbSIsInBhdCI6IndUUEFydnRna19INlVTbDFGamlyVGFoa3ZoVUtrX2pOZ05XcmtNd0VTQXciLCJ1c2VySWQiOiJmNDAzMTg5ZS05ODIxLTQ2NzktYjRmZS0wZWMyMjY0NDQyZjgiLCJpc3MiOiJtZF9wYXQiLCJyZWFkT25seSI6ZmFsc2UsInRva2VuVHlwZSI6InJlYWRfd3JpdGUiLCJpYXQiOjE3NTIyMjMzODJ9.BjvBqQ8dpgYkbW98IpxE8QTwGJbWexsctB4qNxaxGpo"
 
+# Load environment variables for Backblaze B2
+load_dotenv('backblaze_credentials.env')
+
 def initialize_motherduck():
     """Initialize MotherDuck database connection"""
     try:
@@ -46,8 +51,84 @@ def initialize_motherduck():
         st.error(f"Failed to initialize MotherDuck: {e}")
         return None, None
 
-def get_access_token():
-    """Get a fresh access token from Zoho"""
+def initialize_backblaze():
+    """Initialize Backblaze B2 connection"""
+    try:
+        # Test Backblaze connection
+        success, message = backblaze_native_manager.config.test_connection()
+        if not success:
+            st.error(f"Backblaze B2 connection failed: {message}")
+            return False
+        
+        return True
+    except Exception as e:
+        st.error(f"Failed to initialize Backblaze B2: {e}")
+        return False
+
+def test_backblaze_connection():
+    """Test Backblaze B2 connection and display results"""
+    try:
+        with st.spinner("Testing Backblaze B2 connection..."):
+            # Test connection directly to get detailed error message
+            success, message = backblaze_native_manager.config.test_connection()
+            if success:
+                st.success(f"✅ {message}")
+                return True
+            else:
+                st.error(f"❌ {message}")
+                # Show additional help if initialization failed
+                if backblaze_native_manager.config.init_error:
+                    with st.expander("🔧 Troubleshooting Tips"):
+                        st.markdown("""
+                        **Common issues:**
+                        - Invalid Application Key ID or Application Key
+                        - Bucket name doesn't exist or is incorrect
+                        - Network connectivity issues
+                        - Missing `b2sdk` package (install with: `pip install b2sdk`)
+                        
+                        **Check your credentials in:**
+                        - Environment variables: `BACKBLAZE_ACCESS_KEY_ID`, `BACKBLAZE_SECRET_ACCESS_KEY`, `BACKBLAZE_BUCKET_NAME`
+                        - Or in `backblaze_credentials.env` file
+                        """)
+                return False
+    except Exception as e:
+        st.error(f"❌ Backblaze B2 test error: {str(e)}")
+        return False
+
+def upload_pdf_to_backblaze(file_path, customer_id, company_name="Unknown"):
+    """Upload PDF to Backblaze B2 and return download URL"""
+    try:
+        # Upload PDF and get download URL
+        success, message, file_key, download_url = backblaze_native_manager.upload_and_get_url(
+            file_path=file_path,
+            customer_id=customer_id,
+            company_name=company_name,
+            expiry_hours=168  # URLs expire in 7 days (168 hours)
+        )
+        
+        if success:
+            return True, message, download_url
+        else:
+            return False, message, None
+            
+    except Exception as e:
+        return False, f"Upload error: {str(e)}", None
+
+_ZOHO_TOKEN_CACHE = {"access_token": None, "expires_at": 0.0}
+
+def get_access_token(force_refresh: bool = False):
+    """Get a Zoho access token, cached in-process.
+
+    Zoho's /oauth/v2/token endpoint is rate-limited (~15-20 requests / 10 min per
+    refresh token). Access tokens are valid for ~1 hour, so we cache and reuse
+    them across the whole bulk-email run instead of requesting a new one per
+    email (which was causing 'too many requests continuously' errors).
+    """
+    now = time.time()
+    cached = _ZOHO_TOKEN_CACHE.get("access_token")
+    if (not force_refresh) and cached and now < _ZOHO_TOKEN_CACHE.get("expires_at", 0):
+        return cached
+
     url = "https://accounts.zoho.com/oauth/v2/token"
     data = {
         "refresh_token": REFRESH_TOKEN,
@@ -59,6 +140,9 @@ def get_access_token():
     resp_json = response.json()
 
     if "access_token" in resp_json:
+        expires_in = int(resp_json.get("expires_in", 3600))
+        _ZOHO_TOKEN_CACHE["access_token"] = resp_json["access_token"]
+        _ZOHO_TOKEN_CACHE["expires_at"] = now + max(60, expires_in - 300)
         return resp_json["access_token"]
     else:
         raise Exception(f"Failed to get access token: {resp_json}")
@@ -126,17 +210,20 @@ def test_email_with_attachment():
     except Exception as e:
         return False, f"Test email error: {str(e)}"
 
-def send_email_via_zoho(to_email, subject, content, attachment_path=None):
-    """Send email via Zoho Mail API - simplified without attachments due to API limitations"""
+def send_email_via_zoho(to_email, subject, content, download_url=None):
+    """Send email via Zoho Mail API with Backblaze download link"""
     try:
         access_token = get_access_token()
         url = f"https://mail.zoho.com/api/accounts/{ACCOUNT_ID}/messages"
-        
-        headers = {
-            "Authorization": f"Zoho-oauthtoken {access_token}",
-            "Content-Type": "application/json"
-        }
-        
+
+        def _build_headers(tok):
+            return {
+                "Authorization": f"Zoho-oauthtoken {tok}",
+                "Content-Type": "application/json"
+            }
+
+        headers = _build_headers(access_token)
+
         # Prepare email data - only use supported fields
         data = {
             "fromAddress": "hello@clearlinehmo.com",
@@ -146,34 +233,43 @@ def send_email_via_zoho(to_email, subject, content, attachment_path=None):
             "mailFormat": "html"
         }
         
-        # Add note about PDF if provided
-        if attachment_path and os.path.exists(attachment_path):
-            data['content'] += f"\n\n📎 <strong>Your personalized health screening report has been generated and is ready for download.</strong><br/><br/>"
-            data['content'] += f"<strong>How to get your report:</strong><br/>"
-            data['content'] += f"• Contact our medical team at WhatsApp: 08076490056 (Telemedicine consultation)<br/>"
-            data['content'] += f"• Email us at hello@clearlinehmo.com<br/>"
-            data['content'] += f"• Provide your name and we'll send your report immediately<br/><br/>"
-            data['content'] += f"<em>Note: Due to technical limitations, we cannot attach PDF files directly to emails. We'll send your report separately upon request.</em>"
+        # Add download link if provided
+        if download_url:
+            data['content'] += f"\n\n📎 <strong>Your personalized health screening report is ready for download!</strong><br/><br/>"
+            data['content'] += f"<div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;'>"
+            data['content'] += f"<h3 style='color: #2c5aa0; margin-top: 0;'>📄 Download Your Health Report</h3>"
+            data['content'] += f"<p>Click the button below to download your personalized health screening report:</p>"
+            data['content'] += f"<a href='{download_url}' style='display: inline-block; background-color: #2c5aa0; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold;'>📥 Download Report</a>"
+            data['content'] += f"<p style='font-size: 12px; color: #666; margin-top: 10px;'>This link will expire in 7 days for security reasons.</p>"
+            data['content'] += f"</div>"
         
         # Send the email
         print(f"Debug: Sending email to {to_email}")
         print(f"Debug: JSON data keys: {list(data.keys())}")
-        
+
         response = requests.post(url, headers=headers, json=data)
-        
+
+        # If the cached token was rejected, refresh once and retry
+        if response.status_code in (401, 403):
+            try:
+                access_token = get_access_token(force_refresh=True)
+                response = requests.post(url, headers=_build_headers(access_token), json=data)
+            except Exception:
+                pass
+
         if response.status_code == 200:
-            if attachment_path and os.path.exists(attachment_path):
-                return True, "Email sent successfully (report available on request)"
+            if download_url:
+                return True, "Email sent successfully with download link"
             else:
                 return True, "Email sent successfully"
         else:
             return False, f"Failed to send email. Status: {response.status_code}, Response: {response.text}"
-            
+
     except Exception as e:
         return False, f"Error sending email: {str(e)}"
 
-def send_email_via_smtp(to_email, subject, content, attachment_path=None, smtp_password=None):
-    """Send email via SMTP with PDF attachment"""
+def send_email_via_smtp(to_email, subject, content, attachment_path=None, download_url=None, smtp_password=None):
+    """Send email via SMTP with PDF attachment or Backblaze download link"""
     try:
         if not smtp_password:
             return False, "SMTP password not provided"
@@ -184,10 +280,20 @@ def send_email_via_smtp(to_email, subject, content, attachment_path=None, smtp_p
         msg['To'] = to_email
         msg['Subject'] = subject
         
+        # Add download link to content if provided
+        if download_url:
+            content += f"\n\n📎 <strong>Your personalized health screening report is ready for download!</strong><br/><br/>"
+            content += f"<div style='background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;'>"
+            content += f"<h3 style='color: #2c5aa0; margin-top: 0;'>📄 Download Your Health Report</h3>"
+            content += f"<p>Click the button below to download your personalized health screening report:</p>"
+            content += f"<a href='{download_url}' style='display: inline-block; background-color: #2c5aa0; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold;'>📥 Download Report</a>"
+            content += f"<p style='font-size: 12px; color: #666; margin-top: 10px;'>This link will expire in 7 days for security reasons.</p>"
+            content += f"</div>"
+        
         # Add body to email
         msg.attach(MIMEText(content, 'html'))
         
-        # Add attachment if provided
+        # Add attachment if provided (for backward compatibility)
         if attachment_path and os.path.exists(attachment_path):
             try:
                 with open(attachment_path, "rb") as attachment:
@@ -212,7 +318,9 @@ def send_email_via_smtp(to_email, subject, content, attachment_path=None, smtp_p
         server.sendmail(SMTP_USERNAME, to_email, text)
         server.quit()
         
-        if attachment_path and os.path.exists(attachment_path):
+        if download_url:
+            return True, "Email sent successfully with download link"
+        elif attachment_path and os.path.exists(attachment_path):
             return True, "Email sent successfully with PDF attachment"
         else:
             return True, "Email sent successfully"
@@ -628,7 +736,7 @@ def main():
     
     # Sidebar for navigation
     st.sidebar.title("Navigation")
-    page = st.sidebar.selectbox("Choose a page", ["Company Report", "Individual Reports", "Bulk Email Reports"])
+    page = st.sidebar.selectbox("Choose a page", ["Company Report", "Individual Reports", "Bulk Email Reports", "Backblaze B2 Setup"])
     
     if page == "Company Report":
         st.header("📊 Company Health Screening Report")
@@ -648,40 +756,24 @@ def main():
                 if st.button("Generate Company Report", type="primary"):
                     with st.spinner("Analyzing data and generating report..."):
                         try:
-                            # Initialize MotherDuck
-                            db, pdf_storage = initialize_motherduck()
-                            if not db:
-                                st.error("❌ Failed to connect to MotherDuck database")
-                                return
-                            
-                            # Store customer data in MotherDuck
-                            st.info("📊 Storing customer data in MotherDuck...")
-                            customer_count = db.store_customers_from_excel(uploaded_file, company_name)
-                            st.success(f"✅ Stored {customer_count} customers in MotherDuck database")
-                            
-                            # Analyze data
+                            # Analyze data (no MotherDuck, no Backblaze, no emails)
                             results = analyze_staff_data(data_df, company_name)
                             
-                            # Generate report
+                            # Ensure reports directory exists
+                            os.makedirs("reports", exist_ok=True)
+                            
+                            # Generate report locally for direct download
                             output_path = f"reports/{company_name.replace(' ', '_')}_Health_Screening_Report.pdf"
                             report_path = generate_report(results, output_path)
                             
-                            # Store PDF in MotherDuck
-                            st.info("💾 Storing report in MotherDuck...")
-                            success = pdf_storage.store_pdf(report_path, f"COMPANY_{company_name.replace(' ', '_')}", company_name)
-                            if success:
-                                st.success("✅ Company report stored in MotherDuck database")
-                            else:
-                                st.warning("⚠️ Report generated but failed to store in database")
-                            
                             st.success("✅ Company report generated successfully!")
                             
-                            # Display download button
+                            # Display download button only
                             with open(report_path, "rb") as file:
                                 st.download_button(
                                     label="📥 Download Company Report",
                                     data=file.read(),
-                                    file_name=output_path,
+                                    file_name=os.path.basename(output_path),
                                     mime="application/pdf"
                                 )
                             
@@ -693,12 +785,12 @@ def main():
                                 st.metric("Total Staff", results['total_staff'])
                             
                             with col2:
-                                if results.get('has_bp'):
+                                if results.get('has_bp') and results.get('blood_pressure'):
                                     normal_bp = results['blood_pressure']['distribution_pct'].get('NORMAL', 0)
                                     st.metric("Normal BP %", f"{normal_bp}%")
                             
                             with col3:
-                                if results.get('has_bmi'):
+                                if results.get('has_bmi') and results.get('bmi'):
                                     normal_bmi = results['bmi']['distribution_pct'].get('NORMAL', 0)
                                     st.metric("Normal BMI %", f"{normal_bmi}%")
                             
@@ -815,12 +907,12 @@ def main():
                     st.subheader("🔧 Email Method Configuration")
                     email_method = st.radio(
                         "Choose email method:",
-                        ["Zoho Mail API (No PDF attachments)", "SMTP (With PDF attachments)"],
-                        help="SMTP method supports PDF attachments but requires app password setup"
+                        ["Backblaze B2 + Zoho Mail API (Recommended)", "Backblaze B2 + SMTP", "Zoho Mail API (No PDF attachments)", "SMTP (With PDF attachments)"],
+                        help="Backblaze B2 methods store PDFs in cloud and send download links. This eliminates file size limits and email delivery issues."
                     )
                     
                     # SMTP Configuration (only show if SMTP is selected)
-                    if email_method == "SMTP (With PDF attachments)":
+                    if email_method in ["SMTP (With PDF attachments)", "Backblaze B2 + SMTP"]:
                         st.subheader("⚙️ SMTP Configuration")
                         
                         with st.expander("📖 How to set up SMTP (Click to expand)"):
@@ -916,6 +1008,18 @@ def main():
                                 send_emails = st.button("📧 Send Notification Emails", type="primary")
                             with col2:
                                 download_reports = st.button("💾 Download All Reports", type="secondary")
+                        elif email_method in ["Backblaze B2 + Zoho Mail API (Recommended)", "Backblaze B2 + SMTP"]:
+                            st.success("✅ **Backblaze B2 Method**: PDFs will be stored in cloud storage and customers will receive secure download links!")
+                            
+                            # Test Backblaze connection first
+                            if st.button("🔗 Test Backblaze B2 Connection"):
+                                test_backblaze_connection()
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                send_emails = st.button("📧 Send Emails with Download Links", type="primary")
+                            with col2:
+                                download_reports = st.button("💾 Download All Reports", type="secondary")
                         else:  # SMTP method
                             st.success("✅ **SMTP Method**: This method supports PDF attachments!")
                             
@@ -924,30 +1028,6 @@ def main():
                                 send_emails = False
                                 download_reports = False
                             else:
-                                # Batch sending configuration
-                                st.subheader("⚙️ Batch Sending Configuration")
-                                col1, col2 = st.columns(2)
-                                
-                                with col1:
-                                    batch_size = st.number_input(
-                                        "Batch Size", 
-                                        min_value=1, 
-                                        max_value=50, 
-                                        value=10,
-                                        help="Number of emails to send before taking a longer break"
-                                    )
-                                
-                                with col2:
-                                    delay_seconds = st.number_input(
-                                        "Delay Between Emails (seconds)", 
-                                        min_value=1, 
-                                        max_value=60, 
-                                        value=3,
-                                        help="Seconds to wait between each email"
-                                    )
-                                
-                                st.info(f"📊 **Sending Strategy**: Will send {batch_size} emails, then wait 30 seconds to prevent rate limiting.")
-                                
                                 with st.expander("ℹ️ About Rate Limiting (Click to expand)"):
                                     st.markdown("""
                                     **Why does this happen?**
@@ -956,8 +1036,8 @@ def main():
                                     - This is normal for bulk email sending
                                     
                                     **How we prevent it:**
-                                    - ⏱️ **Delay between emails**: {delay_seconds} seconds
-                                    - 📦 **Batch processing**: {batch_size} emails per batch
+                                    - ⏱️ **Delay between emails**: 3 seconds (configurable)
+                                    - 📦 **Batch processing**: 10 emails per batch (configurable)
                                     - ⏸️ **Longer breaks**: 30 seconds between batches
                                     - 🔄 **Automatic retry**: If rate limited, wait and retry once
                                     
@@ -970,7 +1050,7 @@ def main():
                                     - Increase the delay between emails
                                     - Reduce the batch size
                                     - Wait 1-2 hours before trying again
-                                    """.format(delay_seconds=delay_seconds, batch_size=batch_size))
+                                    """)
                                 
                                 col1, col2 = st.columns(2)
                                 with col1:
@@ -979,16 +1059,12 @@ def main():
                                     download_reports = st.button("💾 Download All Reports", type="secondary")
                         
                         if download_reports:
-                            # Initialize MotherDuck
-                            db, pdf_storage = initialize_motherduck()
-                            if not db:
-                                st.error("❌ Failed to connect to MotherDuck database")
+                            # Initialize Backblaze B2
+                            if not initialize_backblaze():
+                                st.error("❌ Failed to connect to Backblaze B2")
                                 return
                             
-                            # Store customer data in MotherDuck
-                            st.info("📊 Storing customer data in MotherDuck...")
-                            customer_count = db.store_customers_from_excel(uploaded_file, "Bulk Reports")
-                            st.success(f"✅ Stored {customer_count} customers in MotherDuck database")
+                            st.info("☁️ Using Backblaze B2 for PDF storage...")
                             
                             # Generate all reports for download
                             st.info("Generating all individual reports...")
@@ -1003,9 +1079,15 @@ def main():
                                     output_path = f"reports/{clean_enrollee_id}.pdf"
                                     generate_individual_report(individual_data, analysis, output_path)
                                     
-                                    # Store PDF in MotherDuck
+                                    # Upload to Backblaze B2
                                     company_name = individual_data.get('COMPANY', 'Bulk Reports')
-                                    pdf_storage.store_pdf(output_path, enrollee_id, company_name)
+                                    upload_success, upload_message, backblaze_url = upload_pdf_to_backblaze(
+                                        output_path, enrollee_id, company_name
+                                    )
+                                    if upload_success:
+                                        st.success(f"✅ Uploaded {row['NAME']}'s report to Backblaze B2")
+                                    else:
+                                        st.warning(f"⚠️ Failed to upload {row['NAME']}'s report to Backblaze B2: {upload_message}")
                                     
                                     download_links.append(output_path)
                                 except Exception as e:
@@ -1013,20 +1095,64 @@ def main():
                             
                             if download_links:
                                 st.success(f"✅ Generated {len(download_links)} individual reports!")
-                                st.success("✅ All reports stored in MotherDuck database!")
-                                st.info("All reports have been saved to your local directory and cloud database.")
+                                st.success("✅ All reports uploaded to Backblaze B2 cloud storage!")
+                                st.info("All reports have been saved locally and uploaded to Backblaze B2 cloud storage.")
                         
                         if send_emails:
-                            # Initialize MotherDuck
-                            db, pdf_storage = initialize_motherduck()
-                            if not db:
-                                st.error("❌ Failed to connect to MotherDuck database")
+                            # Initialize Backblaze B2
+                            if not initialize_backblaze():
+                                st.error("❌ Failed to connect to Backblaze B2")
                                 return
                             
-                            # Store customer data in MotherDuck
-                            st.info("📊 Storing customer data in MotherDuck...")
-                            customer_count = db.store_customers_from_excel(uploaded_file, "Bulk Email Reports")
-                            st.success(f"✅ Stored {customer_count} customers in MotherDuck database")
+                            st.info("☁️ Using Backblaze B2 for PDF storage...")
+                            
+                            # Batch sending configuration
+                            st.subheader("⚙️ Batch Sending Configuration")
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                batch_size = st.number_input(
+                                    "Batch Size", 
+                                    min_value=1, 
+                                    max_value=50, 
+                                    value=10,
+                                    help="Number of emails to send before taking a longer break"
+                                )
+                            
+                            with col2:
+                                delay_seconds = st.number_input(
+                                    "Delay Between Emails (seconds)", 
+                                    min_value=1, 
+                                    max_value=60, 
+                                    value=3,
+                                    help="Seconds to wait between each email"
+                                )
+                            
+                            st.info(f"📊 **Sending Strategy**: Will send {batch_size} emails, then wait 30 seconds to prevent rate limiting.")
+                            
+                            with st.expander("ℹ️ About Rate Limiting (Click to expand)"):
+                                st.markdown(f"""
+                                **Why does this happen?**
+                                - Zoho Mail has built-in spam protection
+                                - Sending too many emails quickly triggers rate limiting
+                                - This is normal for bulk email sending
+                                
+                                **How we prevent it:**
+                                - ⏱️ **Delay between emails**: {delay_seconds} seconds
+                                - 📦 **Batch processing**: {batch_size} emails per batch
+                                - ⏸️ **Longer breaks**: 30 seconds between batches
+                                - 🔄 **Automatic retry**: If rate limited, wait and retry once
+                                
+                                **Recommended settings:**
+                                - **Small lists (1-20)**: 3 seconds delay, batch size 10
+                                - **Medium lists (21-100)**: 5 seconds delay, batch size 5
+                                - **Large lists (100+)**: 10 seconds delay, batch size 3
+                                
+                                **If you still get rate limited:**
+                                - Increase the delay between emails
+                                - Reduce the batch size
+                                - Wait 1-2 hours before trying again
+                                """)
                             
                             progress_bar = st.progress(0)
                             status_text = st.empty()
@@ -1034,6 +1160,7 @@ def main():
                             success_count = 0
                             failed_count = 0
                             failed_emails = []
+                            failed_emails_with_links = []  # Store failed emails with their download links
                             
                             total_emails = len(valid_emails)
                             
@@ -1087,9 +1214,21 @@ def main():
                                     # Generate report to temporary file
                                     generate_individual_report(individual_data, analysis, temp_path)
                                     
-                                    # Store PDF in MotherDuck
+                                    # Get company name for Backblaze B2 organization
                                     company_name = individual_data.get('COMPANY', 'Bulk Email Reports')
-                                    pdf_storage.store_pdf(temp_path, enrollee_id, company_name)
+                                    
+                                    # Upload to Backblaze B2 if using Backblaze method
+                                    download_url = None
+                                    if email_method in ["Backblaze B2 + Zoho Mail API (Recommended)", "Backblaze B2 + SMTP"]:
+                                        upload_success, upload_message, backblaze_url = upload_pdf_to_backblaze(
+                                            temp_path, enrollee_id, company_name
+                                        )
+                                        if upload_success:
+                                            download_url = backblaze_url
+                                            st.success(f"✅ Uploaded {row['NAME']}'s report to Backblaze B2")
+                                            st.info(f"🔗 Download URL: {backblaze_url}")
+                                        else:
+                                            st.warning(f"⚠️ Failed to upload {row['NAME']}'s report to Backblaze B2: {upload_message}")
                                     
                                     # Prepare email content
                                     name = individual_data.get('NAME', 'Valued Employee')
@@ -1138,12 +1277,27 @@ def main():
                                             attachment_path=temp_path,
                                             smtp_password=smtp_password
                                         )
-                                    else:  # Zoho API
+                                    elif email_method == "Backblaze B2 + SMTP":
+                                        success, message = send_email_via_smtp(
+                                            to_email=row['EMAIL'],
+                                            subject=subject,
+                                            content=content,
+                                            download_url=download_url,
+                                            smtp_password=smtp_password
+                                        )
+                                    elif email_method == "Backblaze B2 + Zoho Mail API (Recommended)":
                                         success, message = send_email_via_zoho(
                                             to_email=row['EMAIL'],
                                             subject=subject,
                                             content=content,
-                                            attachment_path=temp_path
+                                            download_url=download_url
+                                        )
+                                    else:  # Zoho API (legacy)
+                                        success, message = send_email_via_zoho(
+                                            to_email=row['EMAIL'],
+                                            subject=subject,
+                                            content=content,
+                                            download_url=None
                                         )
                                     
                                     if success:
@@ -1164,12 +1318,27 @@ def main():
                                                     attachment_path=temp_path,
                                                     smtp_password=smtp_password
                                                 )
-                                            else:  # Zoho API
+                                            elif email_method == "Backblaze B2 + SMTP":
+                                                success, message = send_email_via_smtp(
+                                                    to_email=row['EMAIL'],
+                                                    subject=subject,
+                                                    content=content,
+                                                    download_url=download_url,
+                                                    smtp_password=smtp_password
+                                                )
+                                            elif email_method == "Backblaze B2 + Zoho Mail API (Recommended)":
                                                 success, message = send_email_via_zoho(
                                                     to_email=row['EMAIL'],
                                                     subject=subject,
                                                     content=content,
-                                                    attachment_path=temp_path
+                                                    download_url=download_url
+                                                )
+                                            else:  # Zoho API (legacy)
+                                                success, message = send_email_via_zoho(
+                                                    to_email=row['EMAIL'],
+                                                    subject=subject,
+                                                    content=content,
+                                                    download_url=None
                                                 )
                                             
                                             if success:
@@ -1182,6 +1351,14 @@ def main():
                                                     'Email': row['EMAIL'],
                                                     'Error': f"Rate limit retry failed: {message}"
                                                 })
+                                                # Store failed email with download link if available
+                                                if download_url:
+                                                    failed_emails_with_links.append({
+                                                        'name': row['NAME'],
+                                                        'email': row['EMAIL'],
+                                                        'error': f"Rate limit retry failed: {message}",
+                                                        'download_url': download_url
+                                                    })
                                                 st.error(f"❌ Failed to send to {row['NAME']} ({row['EMAIL']}) after retry: {message}")
                                         else:
                                             failed_count += 1
@@ -1190,6 +1367,14 @@ def main():
                                                 'Email': row['EMAIL'],
                                                 'Error': message
                                             })
+                                            # Store failed email with download link if available
+                                            if download_url:
+                                                failed_emails_with_links.append({
+                                                    'name': row['NAME'],
+                                                    'email': row['EMAIL'],
+                                                    'error': message,
+                                                    'download_url': download_url
+                                                })
                                             st.error(f"❌ Failed to send to {row['NAME']} ({row['EMAIL']}): {message}")
                                     
                                     # Clean up temporary file
@@ -1234,9 +1419,129 @@ def main():
                                     file_name="failed_emails.csv",
                                     mime="text/csv"
                                 )
+                            
+                            # Show failed emails with download links if any
+                            if failed_emails_with_links:
+                                st.subheader("🔗 Failed Emails with Download Links")
+                                st.info("These emails failed to send, but the reports were uploaded successfully. You can manually send the download links to these customers.")
+                                
+                                for failed_email in failed_emails_with_links:
+                                    with st.expander(f"📧 {failed_email['name']} ({failed_email['email']})"):
+                                        st.write(f"**Error:** {failed_email['error']}")
+                                        st.write(f"**Download Link:** {failed_email['download_url']}")
+                                        
+                                        # Copy button for the link
+                                        if st.button(f"📋 Copy Link for {failed_email['name']}", key=f"copy_{failed_email['email']}"):
+                                            st.write("Link copied to clipboard! (You can paste it manually)")
+                                
+                                # Download failed emails with links as CSV
+                                failed_with_links_df = pd.DataFrame(failed_emails_with_links)
+                                csv_with_links = failed_with_links_df.to_csv(index=False)
+                                st.download_button(
+                                    label="📥 Download Failed Emails with Links (CSV)",
+                                    data=csv_with_links,
+                                    file_name="failed_emails_with_links.csv",
+                                    mime="text/csv"
+                                )
                     
             except Exception as e:
                 st.error(f"❌ Error reading file: {str(e)}")
+    
+    elif page == "Backblaze B2 Setup":
+        st.header("☁️ Backblaze B2 Cloud Storage Setup")
+        
+        st.markdown("""
+        **Backblaze B2 Integration** allows you to store PDF reports in the cloud and send secure download links to customers instead of email attachments.
+        
+        ### Benefits:
+        - ✅ **No file size limits** - Store large PDFs without email attachment restrictions
+        - ✅ **Secure access** - Generate time-limited download links (24 hours)
+        - ✅ **Cost effective** - Pay only for storage used
+        - ✅ **Reliable delivery** - No email delivery issues with large attachments
+        - ✅ **Better user experience** - Customers get direct download links
+        """)
+        
+        # Configuration section
+        st.subheader("🔧 Configuration")
+        
+        with st.expander("📖 Setup Instructions (Click to expand)"):
+            st.markdown("""
+            **Step 1: Create Backblaze B2 Account**
+            1. Go to [Backblaze B2](https://www.backblaze.com/b2/cloud-storage.html)
+            2. Sign up for a free account (10GB free storage)
+            3. Create a new bucket for your health reports
+            
+            **Step 2: Get API Credentials**
+            1. Go to [App Keys](https://secure.backblaze.com/user_account.htm)
+            2. Create a new Application Key
+            3. Copy the Key ID and Application Key
+            
+            **Step 3: Configure Environment**
+            1. Copy `backblaze_credentials.env.example` to `backblaze_credentials.env`
+            2. Fill in your credentials in the `.env` file
+            3. Restart the application
+            
+            **Step 4: Test Connection**
+            Use the test button below to verify your setup.
+            """)
+        
+        # Test connection
+        st.subheader("🧪 Test Connection")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔗 Test Backblaze B2 Connection", type="primary"):
+                test_backblaze_connection()
+        
+        with col2:
+            if st.button("📋 View Current Configuration"):
+                st.info("Current Backblaze B2 Configuration:")
+                st.code(f"""
+Bucket Name: {backblaze_native_manager.config.BUCKET_NAME}
+URL Expiry: {backblaze_native_manager.config.URL_EXPIRY_HOURS} hours
+Key ID: {backblaze_native_manager.config.APPLICATION_KEY_ID[:10]}...
+Application Key: {backblaze_native_manager.config.APPLICATION_KEY[:10]}...
+                """)
+        
+        # File management
+        st.subheader("📁 File Management")
+        
+        if st.button("📋 List Uploaded Files"):
+            success, message, files = backblaze_native_manager.list_files()
+            if success:
+                if files:
+                    st.success(f"Found {len(files)} files in Backblaze B2:")
+                    for file_info in files[:10]:  # Show first 10 files
+                        st.write(f"• {file_info['key']} ({file_info['size']} bytes)")
+                    if len(files) > 10:
+                        st.info(f"... and {len(files) - 10} more files")
+                else:
+                    st.info("No files found in Backblaze B2")
+            else:
+                st.error(f"Error listing files: {message}")
+        
+        # Usage statistics
+        st.subheader("📊 Usage Information")
+        
+        st.info("""
+        **How it works:**
+        1. When you generate individual reports, they are automatically uploaded to Backblaze B2
+        2. A secure download link is generated for each report
+        3. The download link is included in the email sent to customers
+        4. Links expire after 24 hours for security
+        5. No need for the medical_portal.py script anymore!
+        """)
+        
+        # Migration notice
+        st.subheader("🔄 Migration from Local Storage")
+        
+        st.warning("""
+        **Important:** Once you enable Backblaze B2 integration:
+        - PDFs will be stored in the cloud instead of locally
+        - Customers will receive download links instead of needing the portal
+        - You can disable the medical_portal.py script
+        - Local PDF files will still be created for backup
+        """)
 
 if __name__ == "__main__":
     main()

@@ -81,16 +81,17 @@ class MotherDuckDB:
             
             # Create PDF reports table for storing actual PDF data
             self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS pdf_reports (
-                    id VARCHAR PRIMARY KEY,
-                    customer_id VARCHAR NOT NULL,
-                    file_name VARCHAR NOT NULL,
-                    file_data TEXT NOT NULL,
-                    file_size INTEGER NOT NULL,
-                    company_name VARCHAR,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (customer_id) REFERENCES customers(id)
-                )
+            CREATE TABLE IF NOT EXISTS pdf_reports (
+                id VARCHAR PRIMARY KEY,
+                customer_id VARCHAR NOT NULL,
+                file_name VARCHAR NOT NULL,
+                file_data TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                company_name VARCHAR,
+                storage_type VARCHAR DEFAULT 'motherduck',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (customer_id) REFERENCES customers(id)
+            )
             """)
             
             logger.info("Database tables created successfully")
@@ -99,20 +100,25 @@ class MotherDuckDB:
             logger.error(f"Error creating tables: {e}")
             raise
     
-    def store_customers_from_excel(self, excel_file_path: str, company_name: str) -> int:
+    def store_customers_from_excel(self, excel_file_path, company_name: str) -> int:
         """
         Store customer data from Excel file into MotherDuck
         
         Args:
-            excel_file_path: Path to Excel file
+            excel_file_path: Path to Excel file or file-like object
             company_name: Name of the company
             
         Returns:
             Number of customers stored
         """
         try:
-            # Read Excel file
-            df = pd.read_excel(excel_file_path)
+            # Read Excel file (handle both file paths and file-like objects)
+            if hasattr(excel_file_path, 'read'):
+                # It's a file-like object (from Streamlit upload)
+                df = pd.read_excel(excel_file_path)
+            else:
+                # It's a file path
+                df = pd.read_excel(excel_file_path)
             
             # Prepare customer data
             customers_data = []
@@ -135,15 +141,19 @@ class MotherDuckDB:
                     'company_name': company_name
                 })
             
-            # Convert to DataFrame and insert
-            customers_df = pd.DataFrame(customers_data)
-            
-            # Insert or update customers
-            self.conn.execute("""
-                INSERT OR REPLACE INTO customers (id, name, email, phone, report_file_name, company_name, updated_at)
-                SELECT id, name, email, phone, report_file_name, company_name, CURRENT_TIMESTAMP
-                FROM customers_df
-            """, {"customers_df": customers_df})
+            # Insert customers one by one to avoid DataFrame conversion issues
+            for customer in customers_data:
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO customers (id, name, email, phone, report_file_name, company_name, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, [
+                    customer['id'],
+                    customer['name'],
+                    customer['email'],
+                    customer['phone'],
+                    customer['report_file_name'],
+                    customer['company_name']
+                ])
             
             logger.info(f"Stored {len(customers_data)} customers for {company_name}")
             return len(customers_data)
