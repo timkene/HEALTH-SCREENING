@@ -62,6 +62,8 @@ _token_cache = ZohoTokenCache()
 
 
 def send_via_zoho(to_email: str, name: str, pdf_path: str) -> bool:
+    """Send via Zoho OAuth API (multipart). Falls back to SMTP when Zoho's attachment
+    API is not enabled on the account (UPLOAD_RULE_NOT_CONFIGURED)."""
     import logging
     log = logging.getLogger(__name__)
     s = get_settings()
@@ -71,44 +73,31 @@ def send_via_zoho(to_email: str, name: str, pdf_path: str) -> bool:
         log.error("Zoho token refresh failed: %s", exc)
         return False
 
-    # Step 1: upload attachment and get token — Zoho rejects base64 inline
     with open(pdf_path, "rb") as f:
-        up = httpx.post(
-            f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages/attachments",
-            headers={"Authorization": f"Zoho-oauthtoken {token}"},
+        resp = httpx.post(
+            f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages",
+            data={
+                "fromAddress": s.zoho_from_email,
+                "toAddress": to_email,
+                "subject": _EMAIL_SUBJECT,
+                "content": _EMAIL_BODY.format(name=name),
+                "mailFormat": "plaintext",
+            },
             files={"attachment": ("health_report.pdf", f, "application/pdf")},
+            headers={"Authorization": f"Zoho-oauthtoken {token}"},
             timeout=30,
         )
-    if up.status_code != 200:
-        log.error("Zoho attachment upload %s: %s", up.status_code, up.text[:500])
-        return False
-    up_data = up.json().get("data", {})
-    attach_token = (
-        up_data.get("attachmentToken")
-        if isinstance(up_data, dict)
-        else (up_data[0].get("attachmentToken") if up_data else None)
-    )
-    if not attach_token:
-        log.error("Zoho attachment token missing: %s", up.text[:300])
-        return False
 
-    # Step 2: send with attachment token
-    payload = {
-        "fromAddress": s.zoho_from_email,
-        "toAddress": to_email,
-        "subject": _EMAIL_SUBJECT,
-        "content": _EMAIL_BODY.format(name=name),
-        "attachments": [{"attachmentToken": attach_token}],
-    }
-    resp = httpx.post(
-        f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages",
-        json=payload,
-        headers={"Authorization": f"Zoho-oauthtoken {token}"},
-        timeout=30,
-    )
-    if resp.status_code != 200:
-        log.error("Zoho send %s: %s", resp.status_code, resp.text[:500])
-    return resp.status_code == 200
+    if resp.status_code == 200:
+        return True
+
+    error_code = resp.json().get("data", {}).get("errorCode", "")
+    if "RULE_NOT_CONFIGURED" in error_code:
+        log.warning("Zoho attachment API not configured (%s) — falling back to SMTP", error_code)
+        return send_via_smtp(to_email, name, pdf_path)
+
+    log.error("Zoho API %s: %s", resp.status_code, resp.text[:500])
+    return False
 
 
 def send_via_smtp(to_email: str, name: str, pdf_path: str) -> bool:

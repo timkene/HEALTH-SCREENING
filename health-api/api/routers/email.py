@@ -106,13 +106,12 @@ async def list_methods(_: str = Depends(require_api_key)) -> dict:
     return {"methods": ["smtp", "zohoapi", "backblaze"]}
 
 
-@router.get("/zoho-debug")
-async def zoho_debug(_: str = Depends(require_api_key)) -> dict:
-    """Temporary: test Zoho token refresh + a no-op API call to surface the real error."""
+@router.get("/zoho-health")
+async def zoho_health(_: str = Depends(require_api_key)) -> dict:
+    """Verify Zoho OAuth credentials are valid (token refresh + account probe). No email sent."""
     import httpx
     from api.core.config import get_settings
     s = get_settings()
-    # Step 1: token refresh
     tr = httpx.post(
         "https://accounts.zoho.com/oauth/v2/token",
         data={
@@ -121,43 +120,18 @@ async def zoho_debug(_: str = Depends(require_api_key)) -> dict:
             "client_secret": s.zoho_client_secret,
             "grant_type": "refresh_token",
         },
+        timeout=15,
     )
     if tr.status_code != 200 or "access_token" not in tr.json():
-        return {"step": "token_refresh", "status": tr.status_code, "body": tr.text[:400]}
+        return {"ok": False, "step": "token_refresh", "status": tr.status_code}
     token = tr.json()["access_token"]
-    # Step 2: probe the accounts endpoint (read-only, no email sent)
     ar = httpx.get(
         f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}",
         headers={"Authorization": f"Zoho-oauthtoken {token}"},
         timeout=15,
     )
-    # Step 3: attempt a real send to surface the exact error
-    # find any existing PDF on disk to attach
-    conn = get_db()
-    row = conn.execute("SELECT e.name, e.email, rm.pdf_path FROM enrollees e JOIN report_meta rm USING (enrollee_id) WHERE rm.pdf_path IS NOT NULL LIMIT 1").fetchone()
-    if not row:
-        return {"token_ok": True, "account_probe_status": ar.status_code, "note": "no PDF on disk to test send"}
-    name, email, pdf_path = row
-    # Attempt: single multipart/form-data POST with PDF attached inline
-    with open(pdf_path, "rb") as f:
-        sr = httpx.post(
-            f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages",
-            data={
-                "fromAddress": s.zoho_from_email,
-                "toAddress": email,
-                "subject": "Clearline Health API — debug test",
-                "content": f"Debug test send to {name}.",
-                "mailFormat": "plaintext",
-            },
-            files={"attachment": ("report.pdf", f, "application/pdf")},
-            headers={"Authorization": f"Zoho-oauthtoken {token}"},
-            timeout=30,
-        )
     return {
-        "v": "multipart",
-        "token_ok": True,
+        "ok": ar.status_code == 200,
         "account_probe_status": ar.status_code,
-        "send_status": sr.status_code,
-        "send_body": sr.text[:600],
-        "to_email": email,
+        "from_email": s.zoho_from_email,
     }
