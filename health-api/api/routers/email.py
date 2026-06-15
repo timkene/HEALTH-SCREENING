@@ -104,3 +104,37 @@ async def bulk_send(
 @router.get("/methods")
 async def list_methods(_: str = Depends(require_api_key)) -> dict:
     return {"methods": ["smtp", "zohoapi", "backblaze"]}
+
+
+@router.get("/zoho-debug")
+async def zoho_debug(_: str = Depends(require_api_key)) -> dict:
+    """Temporary: test Zoho token refresh + a no-op API call to surface the real error."""
+    import httpx
+    from api.core.config import get_settings
+    s = get_settings()
+    # Step 1: token refresh
+    tr = httpx.post(
+        "https://accounts.zoho.com/oauth/v2/token",
+        data={
+            "refresh_token": s.zoho_refresh_token,
+            "client_id": s.zoho_client_id,
+            "client_secret": s.zoho_client_secret,
+            "grant_type": "refresh_token",
+        },
+    )
+    if tr.status_code != 200 or "access_token" not in tr.json():
+        return {"step": "token_refresh", "status": tr.status_code, "body": tr.text[:400]}
+    token = tr.json()["access_token"]
+    # Step 2: probe the accounts endpoint (read-only, no email sent)
+    ar = httpx.get(
+        f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}",
+        headers={"Authorization": f"Zoho-oauthtoken {token}"},
+        timeout=15,
+    )
+    return {
+        "token_ok": True,
+        "account_probe_status": ar.status_code,
+        "account_probe_body": ar.text[:400],
+        "account_id_used": s.zoho_account_id,
+        "from_email": s.zoho_from_email,
+    }

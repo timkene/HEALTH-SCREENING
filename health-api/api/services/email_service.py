@@ -62,8 +62,14 @@ _token_cache = ZohoTokenCache()
 
 
 def send_via_zoho(to_email: str, name: str, pdf_path: str) -> bool:
+    import logging
+    log = logging.getLogger(__name__)
     s = get_settings()
-    token = _token_cache.get()
+    try:
+        token = _token_cache.get()
+    except Exception as exc:
+        log.error("Zoho token refresh failed: %s", exc)
+        return False
     with open(pdf_path, "rb") as f:
         pdf_b64 = base64.b64encode(f.read()).decode()
     payload = {
@@ -79,6 +85,8 @@ def send_via_zoho(to_email: str, name: str, pdf_path: str) -> bool:
         headers={"Authorization": f"Zoho-oauthtoken {token}"},
         timeout=30,
     )
+    if resp.status_code != 200:
+        log.error("Zoho API %s: %s", resp.status_code, resp.text[:500])
     return resp.status_code == 200
 
 
