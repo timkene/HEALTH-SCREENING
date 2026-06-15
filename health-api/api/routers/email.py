@@ -131,10 +131,34 @@ async def zoho_debug(_: str = Depends(require_api_key)) -> dict:
         headers={"Authorization": f"Zoho-oauthtoken {token}"},
         timeout=15,
     )
+    # Step 3: attempt a real send to surface the exact error
+    import base64, pathlib
+    # find any existing PDF on disk to attach
+    conn = get_db()
+    row = conn.execute("SELECT e.name, e.email, rm.pdf_path FROM enrollees e JOIN report_meta rm USING (enrollee_id) WHERE rm.pdf_path IS NOT NULL LIMIT 1").fetchone()
+    if not row:
+        return {"token_ok": True, "account_probe_status": ar.status_code, "note": "no PDF on disk to test send"}
+    name, email, pdf_path = row
+    with open(pdf_path, "rb") as f:
+        pdf_b64 = base64.b64encode(f.read()).decode()
+    payload = {
+        "fromAddress": s.zoho_from_email,
+        "toAddress": email,
+        "subject": "Clearline Health API — debug test",
+        "content": f"Debug test send to {name}.",
+        "attachments": [{"name": "report.pdf", "content": pdf_b64}],
+    }
+    sr = httpx.post(
+        f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages",
+        json=payload,
+        headers={"Authorization": f"Zoho-oauthtoken {token}"},
+        timeout=30,
+    )
     return {
         "token_ok": True,
         "account_probe_status": ar.status_code,
-        "account_probe_body": ar.text[:400],
-        "account_id_used": s.zoho_account_id,
-        "from_email": s.zoho_from_email,
+        "send_status": sr.status_code,
+        "send_body": sr.text[:600],
+        "to_email": email,
+        "pdf_path": pdf_path,
     }
