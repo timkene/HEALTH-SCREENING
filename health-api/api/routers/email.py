@@ -138,49 +138,26 @@ async def zoho_debug(_: str = Depends(require_api_key)) -> dict:
     if not row:
         return {"token_ok": True, "account_probe_status": ar.status_code, "note": "no PDF on disk to test send"}
     name, email, pdf_path = row
-    # Step 1: create draft
-    draft_r = httpx.post(
-        f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages",
-        json={
-            "fromAddress": s.zoho_from_email,
-            "toAddress": email,
-            "subject": "Clearline Health API — debug test",
-            "content": f"Debug test send to {name}.",
-            "mailFormat": "plaintext",
-            "mode": "draft",
-        },
-        headers={"Authorization": f"Zoho-oauthtoken {token}"},
-        timeout=30,
-    )
-    if draft_r.status_code != 200:
-        return {"step": "create_draft", "status": draft_r.status_code, "body": draft_r.text[:400]}
-    draft_data = draft_r.json().get("data", {})
-    msg_id = draft_data.get("messageId") or draft_data.get("message", {}).get("messageId")
-    if not msg_id:
-        return {"step": "draft_id_missing", "draft_response": draft_r.text[:400]}
-    # Step 2: attach PDF to draft
+    # Attempt: single multipart/form-data POST with PDF attached inline
     with open(pdf_path, "rb") as f:
-        att_r = httpx.post(
-            f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages/{msg_id}/attachments",
-            headers={"Authorization": f"Zoho-oauthtoken {token}"},
+        sr = httpx.post(
+            f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages",
+            data={
+                "fromAddress": s.zoho_from_email,
+                "toAddress": email,
+                "subject": "Clearline Health API — debug test",
+                "content": f"Debug test send to {name}.",
+                "mailFormat": "plaintext",
+            },
             files={"attachment": ("report.pdf", f, "application/pdf")},
+            headers={"Authorization": f"Zoho-oauthtoken {token}"},
             timeout=30,
         )
-    if att_r.status_code != 200:
-        return {"step": "attach_to_draft", "status": att_r.status_code, "body": att_r.text[:400]}
-    # Step 3: send draft
-    send_r = httpx.put(
-        f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages/{msg_id}",
-        json={"mode": "send"},
-        headers={"Authorization": f"Zoho-oauthtoken {token}"},
-        timeout=30,
-    )
     return {
-        "v": "draft3step",
+        "v": "multipart",
         "token_ok": True,
-        "msg_id": str(msg_id),
-        "attach_status": att_r.status_code,
-        "send_status": send_r.status_code,
-        "send_body": send_r.text[:600],
+        "account_probe_status": ar.status_code,
+        "send_status": sr.status_code,
+        "send_body": sr.text[:600],
         "to_email": email,
     }
