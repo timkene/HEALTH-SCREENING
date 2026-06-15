@@ -132,21 +132,37 @@ async def zoho_debug(_: str = Depends(require_api_key)) -> dict:
         timeout=15,
     )
     # Step 3: attempt a real send to surface the exact error
-    import base64, pathlib
     # find any existing PDF on disk to attach
     conn = get_db()
     row = conn.execute("SELECT e.name, e.email, rm.pdf_path FROM enrollees e JOIN report_meta rm USING (enrollee_id) WHERE rm.pdf_path IS NOT NULL LIMIT 1").fetchone()
     if not row:
         return {"token_ok": True, "account_probe_status": ar.status_code, "note": "no PDF on disk to test send"}
     name, email, pdf_path = row
+    # Step 1: upload attachment
     with open(pdf_path, "rb") as f:
-        pdf_b64 = base64.b64encode(f.read()).decode()
+        up = httpx.post(
+            f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages/attachments",
+            headers={"Authorization": f"Zoho-oauthtoken {token}"},
+            files={"attachment": ("report.pdf", f, "application/pdf")},
+            timeout=30,
+        )
+    if up.status_code != 200:
+        return {"step": "attachment_upload", "status": up.status_code, "body": up.text[:400]}
+    up_data = up.json().get("data", {})
+    attach_token = (
+        up_data.get("attachmentToken")
+        if isinstance(up_data, dict)
+        else (up_data[0].get("attachmentToken") if up_data else None)
+    )
+    if not attach_token:
+        return {"step": "attachment_token_missing", "upload_response": up.text[:400]}
+    # Step 2: send
     payload = {
         "fromAddress": s.zoho_from_email,
         "toAddress": email,
         "subject": "Clearline Health API — debug test",
         "content": f"Debug test send to {name}.",
-        "attachments": [{"name": "report.pdf", "content": pdf_b64}],
+        "attachments": [{"attachmentToken": attach_token}],
     }
     sr = httpx.post(
         f"https://mail.zoho.com/api/accounts/{s.zoho_account_id}/messages",
@@ -157,8 +173,8 @@ async def zoho_debug(_: str = Depends(require_api_key)) -> dict:
     return {
         "token_ok": True,
         "account_probe_status": ar.status_code,
+        "attach_token": attach_token[:20] + "...",
         "send_status": sr.status_code,
         "send_body": sr.text[:600],
         "to_email": email,
-        "pdf_path": pdf_path,
     }
