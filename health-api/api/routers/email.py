@@ -171,6 +171,7 @@ async def zoho_debug(_: str = Depends(require_api_key)) -> dict:
         timeout=30,
     )
     return {
+        "v": "2step",
         "token_ok": True,
         "account_probe_status": ar.status_code,
         "attach_token": attach_token[:20] + "...",
