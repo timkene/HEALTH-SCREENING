@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+from urllib.parse import unquote
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from api.core.security import require_api_key
@@ -17,17 +18,18 @@ router = APIRouter()
 
 def _get_enrollee_row(enrollee_id: str) -> EnrolleeRow:
     conn = get_db()
+    eid = unquote(enrollee_id)
     result = conn.execute(
-        "SELECT * FROM enrollees WHERE enrollee_id = ?", [enrollee_id]
+        "SELECT * FROM enrollees WHERE enrollee_id = ?", [eid]
     ).fetchone()
     if not result:
-        raise HTTPException(status_code=404, detail=f"Enrollee {enrollee_id} not found")
+        raise HTTPException(status_code=404, detail=f"Enrollee {eid} not found")
     cols = [d[0] for d in conn.description]
     data = dict(zip(cols, result))
     return EnrolleeRow(**data)
 
 
-@router.post("/klaire/analyse/{enrollee_id}", response_model=KlaireAnalysis)
+@router.post("/klaire/analyse/{enrollee_id:path}", response_model=KlaireAnalysis)
 async def analyse(enrollee_id: str, _: str = Depends(require_api_key)) -> KlaireAnalysis:
     row = _get_enrollee_row(enrollee_id)
     analysis = analyse_enrollee(row)
@@ -46,7 +48,7 @@ async def analyse(enrollee_id: str, _: str = Depends(require_api_key)) -> Klaire
     return analysis
 
 
-@router.get("/klaire/stream/{enrollee_id}")
+@router.get("/klaire/stream/{enrollee_id:path}")
 async def stream(enrollee_id: str, _: str = Depends(require_api_key)) -> StreamingResponse:
     row = _get_enrollee_row(enrollee_id)
 
@@ -58,7 +60,7 @@ async def stream(enrollee_id: str, _: str = Depends(require_api_key)) -> Streami
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@router.get("/enrollees/{enrollee_id}/doctor-brief", response_model=DoctorBrief)
+@router.get("/enrollees/{enrollee_id:path}/doctor-brief", response_model=DoctorBrief)
 async def doctor_brief(enrollee_id: str, _: str = Depends(require_api_key)) -> DoctorBrief:
     row = _get_enrollee_row(enrollee_id)
     conn = get_db()

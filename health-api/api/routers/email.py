@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import datetime, timedelta
+from urllib.parse import unquote
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from api.core.security import require_api_key
@@ -16,12 +17,13 @@ class SendEmailRequest(BaseModel):
     method: str = "smtp"  # "smtp" | "zohoapi"
 
 
-@router.post("/send/{enrollee_id}")
+@router.post("/send/{enrollee_id:path}")
 async def send_email(
     enrollee_id: str,
     body: SendEmailRequest,
     _: str = Depends(require_api_key),
 ) -> dict:
+    enrollee_id = unquote(enrollee_id)
     conn = get_db()
     result = conn.execute(
         "SELECT e.name, e.email, rm.pdf_path FROM enrollees e "
@@ -49,11 +51,12 @@ async def send_email(
     return {"enrollee_id": enrollee_id, "sent": ok, "method": body.method}
 
 
-@router.post("/backblaze/{enrollee_id}")
+@router.post("/backblaze/{enrollee_id:path}")
 async def backblaze_link(
     enrollee_id: str,
     _: str = Depends(require_api_key),
 ) -> dict:
+    enrollee_id = unquote(enrollee_id)
     conn = get_db()
     result = conn.execute(
         "SELECT e.company_name, rm.pdf_path, rm.b2_url "

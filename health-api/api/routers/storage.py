@@ -1,3 +1,4 @@
+from urllib.parse import unquote
 from fastapi import APIRouter, Depends, HTTPException
 from api.core.security import require_api_key
 from api.core.database import get_db
@@ -6,8 +7,9 @@ from api.services.storage_service import upload_pdf, get_signed_url
 router = APIRouter()
 
 
-@router.post("/upload/{enrollee_id}")
+@router.post("/upload/{enrollee_id:path}")
 async def upload(enrollee_id: str, _: str = Depends(require_api_key)) -> dict:
+    enrollee_id = unquote(enrollee_id)
     conn = get_db()
     result = conn.execute(
         "SELECT rm.pdf_path, e.company_name FROM report_meta rm "
@@ -25,8 +27,9 @@ async def upload(enrollee_id: str, _: str = Depends(require_api_key)) -> dict:
     return {"enrollee_id": enrollee_id, "key": key, "url": url}
 
 
-@router.get("/url/{enrollee_id}")
+@router.get("/url/{enrollee_id:path}")
 async def get_url(enrollee_id: str, _: str = Depends(require_api_key)) -> dict:
+    enrollee_id = unquote(enrollee_id)
     conn = get_db()
     result = conn.execute(
         "SELECT b2_url FROM report_meta WHERE enrollee_id = ?", [enrollee_id]

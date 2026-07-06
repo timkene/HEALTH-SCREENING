@@ -66,18 +66,6 @@ async def get_batch(batch_id: str, _: str = Depends(require_api_key)) -> dict:
     return {"batch_id": batch_id, "reports": [dict(zip(cols, r)) for r in rows]}
 
 
-@router.get("/{enrollee_id}/pdf")
-async def download_pdf(enrollee_id: str, _: str = Depends(require_api_key)) -> FileResponse:
-    conn = get_db()
-    result = conn.execute(
-        "SELECT pdf_path FROM report_meta WHERE enrollee_id = ?", [enrollee_id]
-    ).fetchone()
-    if not result or not result[0] or not os.path.exists(result[0]):
-        raise HTTPException(status_code=404, detail="PDF not found")
-    return FileResponse(result[0], media_type="application/pdf",
-                        filename=f"{enrollee_id}_report.pdf")
-
-
 @router.get("/company/{batch_id}/pdf")
 async def download_company_pdf(batch_id: str, _: str = Depends(require_api_key)) -> FileResponse:
     conn = get_db()
@@ -111,16 +99,32 @@ async def list_batch_enrollees(batch_id: str, _: str = Depends(require_api_key))
     return [dict(zip(cols, r)) for r in rows]
 
 
-@router.post("/{enrollee_id}/generate-sync")
+@router.get("/{enrollee_id:path}/pdf")
+async def download_pdf(enrollee_id: str, _: str = Depends(require_api_key)) -> FileResponse:
+    from urllib.parse import unquote
+    enrollee_id = unquote(enrollee_id)
+    conn = get_db()
+    result = conn.execute(
+        "SELECT pdf_path FROM report_meta WHERE enrollee_id = ?", [enrollee_id]
+    ).fetchone()
+    if not result or not result[0] or not os.path.exists(result[0]):
+        raise HTTPException(status_code=404, detail="PDF not found")
+    return FileResponse(result[0], media_type="application/pdf",
+                        filename=f"{enrollee_id}_report.pdf")
+
+
+@router.post("/{enrollee_id:path}/generate-sync")
 async def generate_pdf_sync(
     enrollee_id: str,
     _: str = Depends(require_api_key),
 ) -> FileResponse:
     """Generate a PDF report for one enrollee synchronously (no Celery required).
     Runs Klaire analysis if not already stored, then generates the PDF."""
+    from urllib.parse import unquote
     from api.services.klaire_service import analyse_enrollee, generate_metric_explanations
     from api.services.report_service import generate_individual_pdf
 
+    enrollee_id = unquote(enrollee_id)
     conn = get_db()
     result = conn.execute(
         "SELECT * FROM enrollees WHERE enrollee_id = ?", [enrollee_id]
