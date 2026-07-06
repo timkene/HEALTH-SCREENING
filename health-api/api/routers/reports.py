@@ -165,7 +165,8 @@ async def generate_pdf_sync(
     batch_id = conn.execute(
         "SELECT batch_id FROM enrollees WHERE enrollee_id = ?", [enrollee_id]
     ).fetchone()[0]
-    out_dir = tempfile.mkdtemp(prefix=f"report_{enrollee_id[:8]}_")
+    safe_prefix = enrollee_id.replace("/", "_").replace("\\", "_")[:12]
+    out_dir = tempfile.mkdtemp(prefix=f"report_{safe_prefix}_")
     pdf_path = generate_individual_pdf(row, analysis, out_dir, narratives)
 
     conn.execute("""
@@ -174,4 +175,4 @@ async def generate_pdf_sync(
     """, [enrollee_id, batch_id, pdf_path])
 
     return FileResponse(pdf_path, media_type="application/pdf",
-                        filename=f"{enrollee_id}_report.pdf")
+                        filename=f"{safe_prefix}_report.pdf")

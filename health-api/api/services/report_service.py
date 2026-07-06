@@ -774,7 +774,8 @@ def generate_individual_pdf(
     narratives: dict | None = None,
 ) -> str:
     os.makedirs(output_dir, exist_ok=True)
-    filename = f"{row.enrollee_id}_{uuid.uuid4().hex[:8]}.pdf"
+    safe_id = row.enrollee_id.replace("/", "_").replace("\\", "_")
+    filename = f"{safe_id}_{uuid.uuid4().hex[:8]}.pdf"
     out_path = os.path.join(output_dir, filename)
 
     doc = SimpleDocTemplate(
